@@ -1,16 +1,34 @@
-- uses: actions/checkout@v3
-  with:
-    fetch-depth: 0  # fetch full history
+name: CR Checker
 
-- name: Set up Python
-  uses: actions/setup-python@v5
-  with:
-    python-version: '3.10'
+# Trigger on PRs to main
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
 
-- name: Install dependencies
-  run: |
-    python -m pip install --upgrade pip
-    pip install -r .github/scripts/requirements.txt
+jobs:
+  run_python_cr_checker:
+    runs-on: ubuntu-latest
 
-- name: Run CR Checker
-  run: python .github/scripts/cr_checker.py
+    steps:
+      # Checkout the repository and fetch full history for git commands
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # fetch full history to make git merge-base work
+
+      # Set up Python 3.10
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Install required Python packages
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyYAML
+
+      # Run the CR Checker Python script
+      - name: Run CR Checker
+        run: python .github/scripts/cr_checker.py
