@@ -1,0 +1,4 @@
+us-east:
+  - releases/us-east/**
+eu-west:
+  - releases/eu-west/**
