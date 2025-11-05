@@ -1,27 +1,26 @@
-name: CR Checker (Python)
+name: CR Checker
 
 on:
   pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - reopened
-      - synchronize
+    branches: [main]
+    types: [opened, reopened, synchronize]
 
 jobs:
-  analyze_changes:
+  run_python_cr_checker:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Run CR Checker
+      - name: Install dependencies
         run: |
-          python .github/scripts/cr_checker.py
+          python -m pip install --upgrade pip
+          pip install -r .github/scripts/requirements.txt
+
+      - name: Run CR Checker
+        run: python .github/scripts/cr_checker.py
