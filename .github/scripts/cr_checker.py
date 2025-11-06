@@ -5,9 +5,7 @@ import yaml
 from pathlib import Path
 from fnmatch import fnmatch
 
-# ----------------------------
-# Helper Functions
-# ----------------------------
+
 def run_command(cmd):
     """Run shell command and return output."""
     result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
@@ -30,18 +28,14 @@ def get_changed_files(base_branch=None, include_globs=None):
 
     print(f"Fetching changed files compared to {base_branch}...")
 
-    # Ensure we have the latest from origin
     run_command(f"git fetch origin {base_branch}")
 
-    # Get the merge base between HEAD and base_branch
     merge_base = run_command(f"git merge-base HEAD origin/{base_branch}")
     print(f"Merge base commit: {merge_base}")
 
-    # Get all changed files since the merge base
     changed = run_command(f"git diff --name-only {merge_base} HEAD")
     changed_files = [f for f in changed.splitlines() if f.strip()]
 
-    # Apply include globs if provided
     if include_globs:
         filtered = []
         for f in changed_files:
@@ -85,7 +79,6 @@ def get_region_code(filtered_files, yaml_file='.github/configs/cr_regions_path.y
     with open(yaml_path) as f:
         regions_data = yaml.safe_load(f)
 
-    # Match files to region patterns
     for region, paths in regions_data.items():
         for path_pattern in paths:
             regex = re.compile(path_pattern.replace("**", ".*"))
@@ -96,9 +89,6 @@ def get_region_code(filtered_files, yaml_file='.github/configs/cr_regions_path.y
     print("No region matched.")
     return ""
 
-# ----------------------------
-# Validate-CHG Implementation
-# ----------------------------
 def validate_chg(region_code, filepath_regex, folders_map, yaml_file='.github/configs/cr_regions_path.yaml', bypass_ecab=True):
     """Fully emulate validate-chg step."""
     print("\n=== Running validate-chg ===")
@@ -109,7 +99,6 @@ def validate_chg(region_code, filepath_regex, folders_map, yaml_file='.github/co
     files = folders_map.split(",")
     print(f"Validating {len(files)} files for region '{region_code}'...")
 
-    # Step 1: Check filepath_regex
     if filepath_regex:
         regex_pattern = filepath_regex.replace("**", ".*").replace("{tf,yaml}", "(tf|yaml)$")
         pattern = re.compile(regex_pattern)
@@ -120,7 +109,6 @@ def validate_chg(region_code, filepath_regex, folders_map, yaml_file='.github/co
                 print(f"  - {f}")
             raise SystemExit("validate-chg failed due to filepath regex mismatch")
 
-    # Step 2: Check region mapping
     yaml_path = Path(yaml_file)
     if yaml_path.exists():
         with open(yaml_path) as f:
@@ -141,9 +129,6 @@ def validate_chg(region_code, filepath_regex, folders_map, yaml_file='.github/co
 
     print("validate-chg passed successfully.")
 
-# ----------------------------
-# Main Workflow
-# ----------------------------
 def main():
     print("=== CR Checker Full Emulated Workflow ===")
 
