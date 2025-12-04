@@ -14,14 +14,17 @@ DRY_RUN = os.environ.get("DRY_RUN", "false").lower() != "false"
 GITHUB_API = "https://api.github.com"
 
 def get_secret(secret_name, region_name=None):
+    # Automatically detect the Lambda region if not provided
     if not region_name:
-        region_name = os.environ.get("AWS_REGION", "us-east-1")
+        session = boto3.session.Session()
+        region_name = session.region_name  # e.g., eu-central-1
     client = boto3.client("secretsmanager", region_name=region_name)
     try:
         resp = client.get_secret_value(SecretId=secret_name)
         return json.loads(resp["SecretString"])
     except ClientError as e:
         raise Exception(f"Unable to retrieve secret {secret_name}: {e}")
+
 
 def generate_jwt(app_id, private_key):
     now = int(time.time())
@@ -84,7 +87,7 @@ def detect_region(files, regions_yaml):
             regex = re.compile(glob_to_regex(pat))
             if any(regex.search(f) for f in files):
                 return region
-    return ""
+    return 
 
 def build_folders_map(files):
     return ",".join(files)
