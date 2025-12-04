@@ -5,16 +5,18 @@ import time
 import yaml
 import jwt
 import requests
-from fnmatch import fnmatch
 import boto3
 from botocore.exceptions import ClientError
 import base64
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() != "false"
 GITHUB_API = "https://api.github.com"
 
 def get_secret(secret_name, region_name=None):
-    # Automatically detect the Lambda region if not provided
     if not region_name:
         session = boto3.session.Session()
         region_name = session.region_name  # e.g., eu-central-1
@@ -24,7 +26,6 @@ def get_secret(secret_name, region_name=None):
         return json.loads(resp["SecretString"])
     except ClientError as e:
         raise Exception(f"Unable to retrieve secret {secret_name}: {e}")
-
 
 def generate_jwt(app_id, private_key):
     now = int(time.time())
@@ -43,24 +44,25 @@ def get_installation_token(app_jwt, owner, repo):
 def fetch_file_from_github(owner, repo, path, ref, token):
     """Fetch a file from GitHub repo at a specific commit/branch"""
     url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}?ref={ref}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json"
-    }
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     r = requests.get(url, headers=headers)
+    if r.status_code == 404:
+        logger.warning(f"File {path} not found in repo {owner}/{repo} at {ref}")
+        return []
     r.raise_for_status()
     content = r.json()["content"]
     return base64.b64decode(content).decode("utf-8").splitlines()
 
 def glob_to_regex(glob_pattern):
-    regex = glob_pattern.replace(".", r"\.").replace("**/", "(.*/)?").replace("**", ".*").replace("*", "[^/]*")
-    regex = re.sub(r"\{([^}]+)\}", r"(\1)", regex)
+    regex = re.escape(glob_pattern)
+    regex = regex.replace(r"\*\*/", "(.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+    regex = re.sub(r"\\\{([^}]+)\\\}", lambda m: "(" + m.group(1).replace(",", "|") + ")", regex)
     return "^" + regex + "$"
 
 def is_excluded(file, patterns):
     for pat in patterns:
         try:
-            if re.search(pat, file):
+            if re.search(glob_to_regex(pat), file):
                 return True
         except re.error:
             if pat in file:
@@ -87,17 +89,14 @@ def detect_region(files, regions_yaml):
             regex = re.compile(glob_to_regex(pat))
             if any(regex.search(f) for f in files):
                 return region
-    return 
+    return None
 
 def build_folders_map(files):
     return ",".join(files)
 
 def post_check_run(token, owner, repo, commit_sha, status, conclusion, output_title, output_summary):
     url = f"{GITHUB_API}/repos/{owner}/{repo}/check-runs"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json"
-    }
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     payload = {
         "name": "CR Checker",
         "head_sha": commit_sha,
@@ -106,7 +105,7 @@ def post_check_run(token, owner, repo, commit_sha, status, conclusion, output_ti
         "output": {"title": output_title, "summary": output_summary}
     }
     if DRY_RUN:
-        print(f"DRY RUN - would post check run: {json.dumps(payload, indent=2)}")
+        logger.info(f"DRY RUN - would post check run: {json.dumps(payload, indent=2)}")
         return
     r = requests.post(url, headers=headers, json=payload)
     r.raise_for_status()
@@ -124,7 +123,7 @@ def lambda_handler(event, context):
         # 1️ Fetch GitHub App secrets
         secrets = get_secret(secret_name)
         app_id = secrets["app-id"]
-        private_key = secrets["client-secret"]
+        private_key = secrets["private_key"]  # Correct key name
 
         # 2️ Generate JWT and installation token
         app_jwt = generate_jwt(app_id, private_key)
@@ -178,4 +177,5 @@ def lambda_handler(event, context):
         }
 
     except Exception as e:
+        logger.exception("Error in Lambda handler")
         return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
