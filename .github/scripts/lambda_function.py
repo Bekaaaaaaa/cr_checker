@@ -5,10 +5,10 @@ import time
 import yaml
 import jwt
 import requests
-from pathlib import Path
 from fnmatch import fnmatch
 import boto3
 from botocore.exceptions import ClientError
+import base64
 
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() != "false"
 GITHUB_API = "https://api.github.com"
@@ -37,12 +37,22 @@ def get_installation_token(app_jwt, owner, repo):
     r.raise_for_status()
     return r.json()["token"]
 
-def load_exclude_patterns(exclude_file=".github/configs/cr_exclude_path.txt"):
-    path = Path(exclude_file)
-    if not path.exists():
-        return []
-    with path.open() as f:
-        return [line.strip() for line in f if line.strip()]
+def fetch_file_from_github(owner, repo, path, ref, token):
+    """Fetch a file from GitHub repo at a specific commit/branch"""
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}?ref={ref}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json"
+    }
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    content = r.json()["content"]
+    return base64.b64decode(content).decode("utf-8").splitlines()
+
+def glob_to_regex(glob_pattern):
+    regex = glob_pattern.replace(".", r"\.").replace("**/", "(.*/)?").replace("**", ".*").replace("*", "[^/]*")
+    regex = re.sub(r"\{([^}]+)\}", r"(\1)", regex)
+    return "^" + regex + "$"
 
 def is_excluded(file, patterns):
     for pat in patterns:
@@ -54,33 +64,12 @@ def is_excluded(file, patterns):
                 return True
     return False
 
-def load_regions(yaml_file=".github/configs/cr_regions_path.yaml"):
-    path = Path(yaml_file)
-    if not path.exists():
-        return {}
-    with path.open() as f:
-        data = yaml.safe_load(f) or {}
-    return data
-
-def glob_to_regex(glob_pattern):
-    regex = glob_pattern
-    regex = regex.replace(".", r"\.")
-    regex = regex.replace("**/", "(.*/)?")
-    regex = regex.replace("**", ".*")
-    regex = regex.replace("*", "[^/]*")
-    regex = re.sub(r"\{([^}]+)\}", r"(\1)", regex)
-    return "^" + regex + "$"
-
 def filter_files_by_region(files, region_code, regions_yaml):
     if not region_code or not regions_yaml:
         return files
     allowed_patterns = regions_yaml.get(region_code, [])
     compiled_patterns = [re.compile(glob_to_regex(p)) for p in allowed_patterns]
-    valid_files = []
-    for f in files:
-        if any(c.search(f) for c in compiled_patterns):
-            valid_files.append(f)
-    return valid_files
+    return [f for f in files if any(c.search(f) for c in compiled_patterns)]
 
 def validate_files(files, filepath_regex):
     if not filepath_regex:
@@ -89,9 +78,6 @@ def validate_files(files, filepath_regex):
     invalid_files = [f for f in files if not regex.search(f)]
     return len(invalid_files) == 0, invalid_files
 
-def build_folders_map(files):
-    return ",".join(files)
-
 def detect_region(files, regions_yaml):
     for region, patterns in regions_yaml.items():
         for pat in patterns:
@@ -99,6 +85,9 @@ def detect_region(files, regions_yaml):
             if any(regex.search(f) for f in files):
                 return region
     return ""
+
+def build_folders_map(files):
+    return ",".join(files)
 
 def post_check_run(token, owner, repo, commit_sha, status, conclusion, output_title, output_summary):
     url = f"{GITHUB_API}/repos/{owner}/{repo}/check-runs"
@@ -111,10 +100,7 @@ def post_check_run(token, owner, repo, commit_sha, status, conclusion, output_ti
         "head_sha": commit_sha,
         "status": status,
         "conclusion": conclusion,
-        "output": {
-            "title": output_title,
-            "summary": output_summary
-        }
+        "output": {"title": output_title, "summary": output_summary}
     }
     if DRY_RUN:
         print(f"DRY RUN - would post check run: {json.dumps(payload, indent=2)}")
@@ -141,22 +127,25 @@ def lambda_handler(event, context):
         app_jwt = generate_jwt(app_id, private_key)
         token = get_installation_token(app_jwt, owner, repo)
 
-        # 3️ Filter changed files
-        exclude_patterns = load_exclude_patterns()
+        # 3️ Fetch exclude.txt and regions YAML dynamically
+        exclude_patterns = fetch_file_from_github(owner, repo, ".github/configs/cr_exclude_path.txt", commit_sha, token)
+        regions_yaml_lines = fetch_file_from_github(owner, repo, ".github/configs/cr_regions_path.yaml", commit_sha, token)
+        regions_yaml = yaml.safe_load("\n".join(regions_yaml_lines)) or {}
+
+        # 4️ Filter changed files
         filtered_files = [f for f in changed_files if not is_excluded(f, exclude_patterns)]
 
-        # 4️ Determine region_code
-        regions_yaml = load_regions()
+        # 5️ Determine region_code
         region_code = detect_region(filtered_files, regions_yaml)
 
-        # 5️ Set filepath_regex
+        # 6️ Set filepath_regex
         filepath_regex = "**/*.{tf,yaml}" if region_code else ""
 
-        # 6️ Validate files
+        # 7️ Validate files
         valid, invalid_files = validate_files(filtered_files, filepath_regex)
         region_valid_files = filter_files_by_region(filtered_files, region_code, regions_yaml)
 
-        # 7️ Determine conclusion
+        # 8️ Determine conclusion
         if not valid:
             conclusion = "failure"
             summary = f"Files do not match filepath-regex: {invalid_files}"
@@ -168,19 +157,10 @@ def lambda_handler(event, context):
             conclusion = "success"
             summary = f"All {len(filtered_files)} files are valid for region {region_code}"
 
-        # 8️ Post result to GitHub Checks API
-        post_check_run(
-            token,
-            owner,
-            repo,
-            commit_sha,
-            status="completed",
-            conclusion=conclusion,
-            output_title="CR Checker Results",
-            output_summary=summary
-        )
+        # 9️ Post result to GitHub Checks API
+        post_check_run(token, owner, repo, commit_sha, "completed", conclusion, "CR Checker Results", summary)
 
-        # 9️ Return structured response
+        # 10️ Return structured response
         return {
             "statusCode": 200,
             "body": json.dumps({
